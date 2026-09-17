@@ -1,4 +1,4 @@
-# Mail Agent / 邮件摘要代理
+# Email2Telegram AI Bot / 邮件转 Telegram AI 机器人
 
 A small Python 3.12 service that polls Gmail over IMAP, summarizes new email with the OpenAI API, and posts the result to Telegram. It is designed to run continuously under systemd on Ubuntu 24.04.
 
@@ -20,7 +20,7 @@ Run the following as `root` on Ubuntu 24.04. Replace the repository URL if you u
 apt update
 apt install -y git python3 python3-venv
 useradd --system --home /opt/mail-agent --shell /usr/sbin/nologin mail-agent
-git clone https://github.com/fuzser/glenn-ai-tel-bot.git /opt/mail-agent
+git clone https://github.com/fuzser/email2telegram-ai-bot.git /opt/mail-agent
 python3 -m venv /opt/mail-agent/.venv
 /opt/mail-agent/.venv/bin/pip install -r /opt/mail-agent/requirements.txt
 cp /opt/mail-agent/.env.example /opt/mail-agent/.env
@@ -107,7 +107,7 @@ Send a new test email only after the service has logged its initial baseline. Co
 ## Five-line recovery runbook / 五行恢复手册
 
 ```bash
-git clone https://github.com/fuzser/glenn-ai-tel-bot.git /opt/mail-agent
+git clone https://github.com/fuzser/email2telegram-ai-bot.git /opt/mail-agent
 python3 -m venv /opt/mail-agent/.venv && /opt/mail-agent/.venv/bin/pip install -r /opt/mail-agent/requirements.txt
 install -o mail-agent -g mail-agent -m 600 /secure-backup/mail-agent.env /opt/mail-agent/.env && install -d -o mail-agent -g mail-agent /var/lib/mail-agent && install -o mail-agent -g mail-agent -m 600 /secure-backup/state.db /var/lib/mail-agent/state.db
 cp /opt/mail-agent/mail-agent.service /etc/systemd/system/ && systemctl daemon-reload
