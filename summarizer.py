@@ -7,4 +7,3 @@ class Summarizer:
     def summarize(self, sender: str, subject: str, body: str) -> list[str]:
         """返回最多三条摘要要点。"""
         raise NotImplementedError("LLM summarization will be implemented next.")
-

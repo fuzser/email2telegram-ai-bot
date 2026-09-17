@@ -22,4 +22,3 @@ class Config:
 def load_config() -> Config:
     """从 .env 和进程环境读取配置。"""
     raise NotImplementedError("Configuration loading will be implemented next.")
-

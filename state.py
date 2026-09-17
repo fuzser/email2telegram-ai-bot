@@ -16,4 +16,3 @@ class StateStore:
     def mark_processed(self, uid: str) -> None:
         """在 Telegram 发送成功后原子化保存 UID。"""
         raise NotImplementedError("Persistent state writing will be implemented next.")
-

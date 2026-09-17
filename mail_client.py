@@ -24,4 +24,3 @@ class MailClient:
 
     def close(self) -> None:
         """关闭当前 IMAP 连接。"""
-

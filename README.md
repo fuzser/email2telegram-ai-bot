@@ -29,4 +29,3 @@ Never commit `.env`, API keys, mailbox passwords, Telegram tokens, chat identifi
 4. 完成实现后，使用 `.venv/bin/python app.py` 手动运行。
 
 严禁提交 `.env`、API Key、邮箱密码、Telegram Token、Chat ID、运行状态或日志。
-
