@@ -1,0 +1,18 @@
+[Unit]
+Description=Email summary to Telegram agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mail-agent
+Group=mail-agent
+WorkingDirectory=/opt/mail-agent
+EnvironmentFile=/opt/mail-agent/.env
+ExecStart=/opt/mail-agent/.venv/bin/python /opt/mail-agent/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
