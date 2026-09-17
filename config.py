@@ -2,6 +2,8 @@
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -24,6 +26,10 @@ class Config:
     telegram_bot_token: str
     telegram_chat_id: str
     poll_interval: int
+    llm_concurrency: int
+    state_db_path: Path
+    legacy_state_path: Path
+    app_timezone: ZoneInfo
 
 
 def _required(name: str) -> str:
@@ -46,6 +52,15 @@ def _positive_int(name: str, default: str, maximum: int) -> int:
     return value
 
 
+def _timezone(name: str, default: str) -> ZoneInfo:
+    """读取并校验 IANA 时区名称。"""
+    value = os.getenv(name, default).strip()
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise ConfigError(f"{name} must be a valid IANA timezone") from exc
+
+
 def load_config() -> Config:
     """从 .env 和进程环境读取并校验配置。"""
     load_dotenv()
@@ -55,9 +70,17 @@ def load_config() -> Config:
         imap_host=_required("IMAP_HOST"),
         imap_port=_positive_int("IMAP_PORT", "993", 65535),
         openai_api_key=_required("OPENAI_API_KEY"),
-        openai_base_url=os.getenv("OPENAI_BASE_URL", "https://grsaiapi.com/v1").strip(),
+        openai_base_url=os.getenv(
+            "OPENAI_BASE_URL", "https://api.openai.com/v1"
+        ).strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-terra").strip(),
         telegram_bot_token=_required("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_required("TELEGRAM_CHAT_ID"),
         poll_interval=_positive_int("POLL_INTERVAL", "5", 300),
+        llm_concurrency=_positive_int("LLM_CONCURRENCY", "3", 8),
+        state_db_path=Path(os.getenv("STATE_DB_PATH", "data/state.db").strip()),
+        legacy_state_path=Path(
+            os.getenv("LEGACY_STATE_PATH", "data/state.json").strip()
+        ),
+        app_timezone=_timezone("APP_TIMEZONE", "Pacific/Auckland"),
     )

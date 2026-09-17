@@ -16,9 +16,9 @@ Requirements:
 - plain text email body
 - HTML fallback converted to readable text if no plain text body exists.
 
-4. Track processed messages using IMAP UID or another persistent identifier.
+4. Track processing and delivery using IMAP UID plus a local SQLite task ledger.
 Do not rely solely on UNSEEN.
-Store state locally so rebooting the server does not cause old emails to be processed again.
+Store state locally so rebooting the server resumes pending work without replaying sent mail.
 
 5. Send the email content to an LLM and produce:
 - maximum 3 bullet points
@@ -77,7 +77,11 @@ mail-agent.service
 - support systemctl enable mail-agent
 
 12. Keep the project simple.
-Do not use Docker, databases, Redis, Celery, web frameworks, or unnecessary infrastructure.
+Use only the Python standard-library SQLite database for the durable task ledger. Do not use Docker, Redis, Celery, web frameworks, or external queue infrastructure.
+
+16. Process at most three LLM summaries concurrently by default, then send Telegram messages sequentially in UID order. Cache completed summaries so Telegram retries do not repeat LLM calls.
+
+17. Display notification timestamps and systemd logs in the `Pacific/Auckland` timezone.
 
 13. Code should be modular:
 app.py

@@ -1,14 +1,14 @@
 # Mail Agent / 邮件摘要代理
 
-A small Python 3.12 service that polls Gmail over IMAP, summarizes new email with an OpenAI-compatible API, and posts the result to Telegram. It is designed to run continuously under systemd on Ubuntu 24.04.
+A small Python 3.12 service that polls Gmail over IMAP, summarizes new email with the OpenAI API, and posts the result to Telegram. It is designed to run continuously under systemd on Ubuntu 24.04.
 
-一个面向 Ubuntu 24.04 的轻量 Python 3.12 常驻服务：通过 IMAP 轮询 Gmail，使用 OpenAI-compatible API 总结新邮件，并将摘要发送到 Telegram。
+一个面向 Ubuntu 24.04 的轻量 Python 3.12 常驻服务：通过 IMAP 轮询 Gmail，使用 OpenAI API 总结新邮件，并将摘要发送到 Telegram。
 
 ## How it works / 工作方式
 
-The service polls every 5 seconds by default. Before each UID query it sends IMAP `NOOP` so a long-lived Gmail connection refreshes its selected mailbox state. On its first successful connection it stores the current maximum IMAP UID as a baseline, so existing messages are not posted. Later messages are identified by `UIDVALIDITY + UID`. A message is marked as processed only after Telegram confirms delivery.
+The service polls every 5 seconds by default. Before each UID query it sends IMAP `NOOP` so a long-lived Gmail connection refreshes its selected mailbox state. On its first successful connection it stores the current maximum IMAP UID as a baseline, so existing messages are not posted. Later messages are identified by `UIDVALIDITY + UID` and registered in SQLite before external API calls. Up to three LLM summaries run concurrently; Telegram delivery remains sequential in UID order. Summaries are cached for delivery retries, and a message is marked as sent only after Telegram confirms delivery.
 
-服务默认每 5 秒轮询一次。每次查询 UID 前先发送 IMAP `NOOP`，让 Gmail 长连接刷新已选择邮箱的状态。首次成功连接时会保存当前最大 IMAP UID 作为基线，因此不会发送历史邮件。之后使用 `UIDVALIDITY + UID` 唯一标识邮件，并且仅在 Telegram 确认发送成功后记录为已处理。
+服务默认每 5 秒轮询一次。每次查询 UID 前先发送 IMAP `NOOP`，让 Gmail 长连接刷新已选择邮箱的状态。首次成功连接时会保存当前最大 IMAP UID 作为基线，因此不会发送历史邮件。之后使用 `UIDVALIDITY + UID` 唯一标识邮件，并在调用外部 API 前登记到 SQLite。最多三个 LLM 摘要任务并发执行，Telegram 仍按 UID 顺序逐条发送。摘要会缓存用于投递重试，并且仅在 Telegram 确认发送成功后标记为已发送。
 
 ## Installation / 安装
 
@@ -40,12 +40,20 @@ EMAIL_PASSWORD=your-gmail-app-password
 IMAP_HOST=imap.gmail.com
 IMAP_PORT=993
 OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=https://grsaiapi.com/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.6-terra
+LLM_CONCURRENCY=3
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 TELEGRAM_CHAT_ID=your-telegram-chat-id
 POLL_INTERVAL=5
+STATE_DB_PATH=data/state.db
+LEGACY_STATE_PATH=data/state.json
+APP_TIMEZONE=Pacific/Auckland
 ```
+
+`LLM_CONCURRENCY=3` is the conservative default for burst processing. Notifications display `Received` and `Processed` in `Pacific/Auckland`. The systemd unit overrides the database path to `/var/lib/mail-agent/state.db`, creates that persistent directory with mode `0700`, and imports the old `/opt/mail-agent/data/state.json` through the configured relative legacy path.
+
+`LLM_CONCURRENCY=3` 是突发邮件处理的保守默认值。通知中的 `Received` 和 `Processed` 使用 `Pacific/Auckland`。systemd 服务会把数据库路径覆盖为 `/var/lib/mail-agent/state.db`，以 `0700` 权限自动创建持久目录，并通过配置的旧状态相对路径导入 `/opt/mail-agent/data/state.json`。
 
 ## Running manually / 手动运行
 
@@ -67,9 +75,9 @@ systemctl enable --now mail-agent
 systemctl status mail-agent --no-pager
 ```
 
-The unit starts after `network-online.target`, runs the virtual-environment Python executable, and restarts five seconds after a failure.
+The unit starts after `network-online.target`, runs the virtual-environment Python executable, uses Auckland time for logs, creates `/var/lib/mail-agent`, and restarts five seconds after a failure.
 
-服务会在网络就绪后启动，使用虚拟环境中的 Python，并在失败五秒后自动重启。
+服务会在网络就绪后启动，使用虚拟环境中的 Python，以奥克兰时区记录日志，创建 `/var/lib/mail-agent`，并在失败五秒后自动重启。
 
 ## Logs / 查看日志
 
@@ -101,14 +109,14 @@ Send a new test email only after the service has logged its initial baseline. Co
 ```bash
 git clone https://github.com/fuzser/glenn-ai-tel-bot.git /opt/mail-agent
 python3 -m venv /opt/mail-agent/.venv && /opt/mail-agent/.venv/bin/pip install -r /opt/mail-agent/requirements.txt
-install -o mail-agent -g mail-agent -m 600 /secure-backup/mail-agent.env /opt/mail-agent/.env
+install -o mail-agent -g mail-agent -m 600 /secure-backup/mail-agent.env /opt/mail-agent/.env && install -d -o mail-agent -g mail-agent /var/lib/mail-agent && install -o mail-agent -g mail-agent -m 600 /secure-backup/state.db /var/lib/mail-agent/state.db
 cp /opt/mail-agent/mail-agent.service /etc/systemd/system/ && systemctl daemon-reload
 systemctl enable --now mail-agent && journalctl -u mail-agent -f
 ```
 
-The `.env` backup must be stored outside Git with restricted access. The local state file is intentionally not included in source control; restoring it is optional when reconnecting to a mailbox whose current messages should become the new baseline.
+Back up both `.env` and `/var/lib/mail-agent/state.db` outside Git with restricted access. The adjacent `state.db.backup` recovers an accidentally removed main database, while an off-host backup is still required for total disk or server loss. If the database and local backup are both missing while the initialization marker remains, startup fails instead of silently skipping queued mail.
 
-`.env` 备份必须保存在 Git 之外并限制访问权限。状态文件不会进入版本控制；如果希望恢复后以邮箱当前消息为新基线，可以不恢复旧状态。
+请将 `.env` 和 `/var/lib/mail-agent/state.db` 一并备份到 Git 之外并限制访问权限。同目录的 `state.db.backup` 可以恢复被误删的主数据库，但磁盘或服务器整体丢失仍需要异机备份。如果数据库和本地备份都丢失但初始化标记仍存在，服务会拒绝启动，而不是静默跳过积压邮件。
 
 ## Troubleshooting / 基础排障
 
@@ -116,13 +124,15 @@ The `.env` backup must be stored outside Git with restricted access. The local s
 - `Cannot connect to IMAP server`: verify IMAP access, Gmail App Password, host, port, DNS, and outbound TCP 993.
 - `LLM summarization failed after retries`: verify the API key, base URL, model access, and outbound HTTPS.
 - `Telegram rejected the message`: verify the bot token, chat ID, and that the bot can post to the target chat.
-- A corrupt `data/state.json` stops safe startup instead of silently replaying old mail. Restore a known-good copy or move it aside only after deciding whether replay is acceptable.
+- `Cannot initialize state database`: restore `/var/lib/mail-agent/state.db` from a known-good off-host backup. Do not delete the initialization marker merely to force startup, because that can skip queued mail.
+- The first SQLite startup automatically imports a valid legacy `data/state.json`. Keep the old JSON until the migration has been verified.
 
 - `Missing required environment variable`：检查 `.env` 中的变量名和值。
 - `Cannot connect to IMAP server`：检查 IMAP 权限、Gmail App Password、地址、端口、DNS 和出站 TCP 993。
 - `LLM summarization failed after retries`：检查 API Key、Base URL、模型权限和出站 HTTPS。
 - Telegram 拒绝消息：检查 Bot Token、Chat ID，以及机器人是否有目标会话的发言权限。
-- `data/state.json` 损坏时，服务会停止安全启动，而不是静默重放旧邮件；只有在明确接受重放风险后才应移走损坏状态。
+- `Cannot initialize state database`：从可靠的异机备份恢复 `/var/lib/mail-agent/state.db`。不要为了强制启动而删除初始化标记，否则可能跳过积压邮件。
+- 第一次使用 SQLite 启动时会自动导入有效的旧版 `data/state.json`；确认迁移成功前请保留旧 JSON。
 
 ## Security / 安全
 

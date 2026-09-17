@@ -9,9 +9,14 @@ User=mail-agent
 Group=mail-agent
 WorkingDirectory=/opt/mail-agent
 EnvironmentFile=/opt/mail-agent/.env
+Environment=STATE_DB_PATH=/var/lib/mail-agent/state.db
+Environment=APP_TIMEZONE=Pacific/Auckland
 ExecStart=/opt/mail-agent/.venv/bin/python /opt/mail-agent/app.py
 Restart=on-failure
 RestartSec=5
+StateDirectory=mail-agent
+StateDirectoryMode=0700
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

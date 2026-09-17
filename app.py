@@ -1,13 +1,14 @@
-"""邮件摘要到 Telegram 的常驻服务入口。"""
+"""SQLite 队列驱动的并发邮件摘要与 Telegram 投递服务。"""
 
 import logging
 import signal
 import threading
-import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from config import ConfigError, load_config
-from mail_client import MailClient, MailClientError
+from mail_client import EmailMessage, MailClient, MailClientError
 from state import StateError, StateStore
 from summarizer import Summarizer, SummarizerError
 from telegram_client import TelegramClient, TelegramError
@@ -31,8 +32,9 @@ def _format_notification(
     bullets: list[str],
     received_at: datetime,
     processed_at: datetime,
+    display_timezone: ZoneInfo,
 ) -> str:
-    """构造测试要求的 Telegram 消息格式。"""
+    """使用配置时区构造 Telegram 消息。"""
     latency = max(0.0, (processed_at - received_at).total_seconds())
     safe_sender = sender[:MAX_SENDER_CHARS]
     safe_subject = subject[:MAX_SUBJECT_CHARS]
@@ -43,16 +45,124 @@ def _format_notification(
         f"Subject: {safe_subject}\n\n"
         "Summary:\n"
         f"{summary}\n\n"
-        f"Received: {received_at.astimezone(timezone.utc).isoformat()}\n"
-        f"Processed: {processed_at.isoformat()}\n"
+        f"Received: {received_at.astimezone(display_timezone).isoformat()}\n"
+        f"Processed: {processed_at.astimezone(display_timezone).isoformat()}\n"
+        f"Timezone: {display_timezone.key}\n"
         f"Latency: {latency:.1f} seconds"
     )
 
 
+def _summarize_batch(
+    messages: list[EmailMessage],
+    state: StateStore,
+    summarizer: Summarizer,
+    executor: ThreadPoolExecutor,
+) -> dict[str, list[str]]:
+    """最多按配置并发生成摘要，并在主线程持久化结果。"""
+    summaries: dict[str, list[str]] = {}
+    futures: dict[Future[list[str]], EmailMessage] = {}
+
+    state.register_emails(
+        [
+            (
+                message.uid_key,
+                message.uid_validity,
+                message.uid,
+                message.received_at,
+            )
+            for message in messages
+        ]
+    )
+    for message in messages:
+        email_state = state.get_email_state(message.uid_key)
+        if email_state.status == "sent":
+            continue
+        if email_state.status == "summarized":
+            if email_state.summary is None:
+                raise StateError("Summarized email has no stored summary")
+            summaries[message.uid_key] = email_state.summary
+            continue
+        if email_state.status != "pending":
+            raise StateError(
+                f"Email UID {message.uid} has unexpected state {email_state.status}"
+            )
+        if STOP_EVENT.is_set():
+            break
+        state.mark_processing(message.uid_key)
+        LOGGER.info("Queueing email UID %s for summarization", message.uid)
+        future = executor.submit(
+            summarizer.summarize,
+            message.sender,
+            message.subject,
+            message.body,
+        )
+        futures[future] = message
+
+    for future in as_completed(futures):
+        message = futures[future]
+        try:
+            bullets = future.result()
+            state.mark_summarized(message.uid_key, bullets)
+            summaries[message.uid_key] = bullets
+            LOGGER.info("Summarized email UID %s", message.uid)
+        except Exception as exc:
+            state.mark_pending(message.uid_key, type(exc).__name__)
+            if isinstance(exc, SummarizerError):
+                LOGGER.exception(
+                    "Could not summarize email UID %s; it will be retried",
+                    message.uid,
+                    exc_info=exc,
+                )
+            else:
+                LOGGER.exception(
+                    "Unexpected summarization error for email UID %s",
+                    message.uid,
+                    exc_info=exc,
+                )
+    return summaries
+
+
+def _deliver_batch(
+    messages: list[EmailMessage],
+    summaries: dict[str, list[str]],
+    state: StateStore,
+    telegram: TelegramClient,
+    display_timezone: ZoneInfo,
+) -> None:
+    """按 UID 顺序向 Telegram 投递已生成的摘要。"""
+    for message in messages:
+        if STOP_EVENT.is_set():
+            break
+        bullets = summaries.get(message.uid_key)
+        if bullets is None:
+            continue
+        processed_at = datetime.now(timezone.utc)
+        notification = _format_notification(
+            message.sender,
+            message.subject,
+            bullets,
+            message.received_at,
+            processed_at,
+            display_timezone,
+        )
+        try:
+            LOGGER.info("Sending email UID %s to Telegram", message.uid)
+            telegram.send_message(notification)
+            LOGGER.info("Telegram delivered email UID %s", message.uid)
+            state.mark_processed(message.uid_key)
+            LOGGER.info("Persisted email UID %s as sent", message.uid)
+        except TelegramError as exc:
+            state.mark_delivery_failed(message.uid_key, type(exc).__name__)
+            LOGGER.exception(
+                "Could not deliver email UID %s; cached summary will be retried",
+                message.uid,
+            )
+
+
 def run() -> None:
-    """持续轮询邮箱并处理每一封未成功投递的新邮件。"""
+    """轮询邮箱、并发摘要，并串行投递 Telegram。"""
     config = load_config()
-    state = StateStore()
+    state = StateStore(config.state_db_path, config.legacy_state_path)
     mail = MailClient(
         config.imap_host,
         config.imap_port,
@@ -67,6 +177,10 @@ def run() -> None:
     telegram = TelegramClient(
         config.telegram_bot_token,
         config.telegram_chat_id,
+    )
+    executor = ThreadPoolExecutor(
+        max_workers=config.llm_concurrency,
+        thread_name_prefix="llm-summary",
     )
 
     mailbox = None
@@ -89,42 +203,23 @@ def run() -> None:
 
                 if baseline is None:
                     raise StateError("Mailbox baseline was not initialized")
-                processed_uids = state.load_processed_uids()
-                messages = mail.fetch_new_messages(baseline + 1, processed_uids)
+                sent_uids = state.load_processed_uids()
+                messages = mail.fetch_new_messages(baseline + 1, sent_uids)
                 if messages:
-                    LOGGER.info("Found %s new email(s)", len(messages))
-                for message in messages:
-                    if STOP_EVENT.is_set():
-                        break
-                    processing_started = time.monotonic()
-                    try:
-                        LOGGER.info("Summarizing email UID %s", message.uid)
-                        bullets = summarizer.summarize(
-                            message.sender, message.subject, message.body
-                        )
-                        processed_at = datetime.now(timezone.utc)
-                        notification = _format_notification(
-                            message.sender,
-                            message.subject,
-                            bullets,
-                            message.received_at,
-                            processed_at,
-                        )
-                        LOGGER.info("Sending email UID %s to Telegram", message.uid)
-                        telegram.send_message(notification)
-                        LOGGER.info("Telegram delivered email UID %s", message.uid)
-                        state.mark_processed(message.uid_key)
-                        LOGGER.info("Persisted email UID %s", message.uid)
-                        LOGGER.info(
-                            "Completed email UID %s in %.1f seconds",
-                            message.uid,
-                            time.monotonic() - processing_started,
-                        )
-                    except (SummarizerError, TelegramError, StateError):
-                        LOGGER.exception(
-                            "Could not complete email UID %s; it will be retried",
-                            message.uid,
-                        )
+                    LOGGER.info("Found %s queued email(s)", len(messages))
+                    summaries = _summarize_batch(
+                        messages,
+                        state,
+                        summarizer,
+                        executor,
+                    )
+                    _deliver_batch(
+                        messages,
+                        summaries,
+                        state,
+                        telegram,
+                        config.app_timezone,
+                    )
             except (MailClientError, StateError):
                 LOGGER.exception("Polling cycle failed; service will retry")
             except Exception:
@@ -132,8 +227,10 @@ def run() -> None:
 
             STOP_EVENT.wait(config.poll_interval)
     finally:
+        executor.shutdown(wait=True, cancel_futures=True)
         mail.close()
         telegram.close()
+        state.close()
 
 
 def main() -> None:
