@@ -59,5 +59,5 @@ def load_config() -> Config:
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-terra").strip(),
         telegram_bot_token=_required("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_required("TELEGRAM_CHAT_ID"),
-        poll_interval=_positive_int("POLL_INTERVAL", "10", 300),
+        poll_interval=_positive_int("POLL_INTERVAL", "5", 300),
     )

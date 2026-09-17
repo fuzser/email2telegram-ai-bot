@@ -3,6 +3,7 @@
 import logging
 import signal
 import threading
+import time
 from datetime import datetime, timezone
 
 from config import ConfigError, load_config
@@ -90,10 +91,14 @@ def run() -> None:
                     raise StateError("Mailbox baseline was not initialized")
                 processed_uids = state.load_processed_uids()
                 messages = mail.fetch_new_messages(baseline + 1, processed_uids)
+                if messages:
+                    LOGGER.info("Found %s new email(s)", len(messages))
                 for message in messages:
                     if STOP_EVENT.is_set():
                         break
+                    processing_started = time.monotonic()
                     try:
+                        LOGGER.info("Summarizing email UID %s", message.uid)
                         bullets = summarizer.summarize(
                             message.sender, message.subject, message.body
                         )
@@ -105,9 +110,16 @@ def run() -> None:
                             message.received_at,
                             processed_at,
                         )
+                        LOGGER.info("Sending email UID %s to Telegram", message.uid)
                         telegram.send_message(notification)
+                        LOGGER.info("Telegram delivered email UID %s", message.uid)
                         state.mark_processed(message.uid_key)
-                        LOGGER.info("Processed email UID %s", message.uid)
+                        LOGGER.info("Persisted email UID %s", message.uid)
+                        LOGGER.info(
+                            "Completed email UID %s in %.1f seconds",
+                            message.uid,
+                            time.monotonic() - processing_started,
+                        )
                     except (SummarizerError, TelegramError, StateError):
                         LOGGER.exception(
                             "Could not complete email UID %s; it will be retried",

@@ -114,8 +114,17 @@ class MailClient:
 
     def _read_mailbox_status(self) -> MailboxStatus:
         connection = self._connect()
+        self._refresh_mailbox(connection)
         uids = self._search_uids(connection)
         return MailboxStatus(self._uid_validity, max(uids, default=0))
+
+    @staticmethod
+    def _refresh_mailbox(connection: imaplib.IMAP4_SSL) -> None:
+        """用 NOOP 刷新所选邮箱状态，让长连接看到新邮件。"""
+        status, _ = connection.noop()
+        if status != "OK":
+            raise MailClientError("IMAP NOOP refresh failed")
+        LOGGER.debug("Mailbox refreshed via IMAP NOOP")
 
     def _fetch_new_messages(
         self, minimum_uid: int, processed_uids: set[str]

@@ -7,7 +7,7 @@ Requirements:
 
 1. Python 3.12 compatible.
 
-2. Poll Gmail IMAP every 10 seconds.
+2. Poll Gmail IMAP every 5 seconds.
 
 3. Read:
 - sender

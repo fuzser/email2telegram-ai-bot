@@ -21,7 +21,7 @@ class Summarizer:
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=20.0,
+            timeout=15.0,
             max_retries=0,
         )
 

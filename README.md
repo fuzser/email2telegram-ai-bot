@@ -6,9 +6,9 @@ A small Python 3.12 service that polls Gmail over IMAP, summarizes new email wit
 
 ## How it works / 工作方式
 
-The service polls every 10 seconds by default. On its first successful connection it stores the current maximum IMAP UID as a baseline, so existing messages are not posted. Later messages are identified by `UIDVALIDITY + UID`. A message is marked as processed only after Telegram confirms delivery.
+The service polls every 5 seconds by default. Before each UID query it sends IMAP `NOOP` so a long-lived Gmail connection refreshes its selected mailbox state. On its first successful connection it stores the current maximum IMAP UID as a baseline, so existing messages are not posted. Later messages are identified by `UIDVALIDITY + UID`. A message is marked as processed only after Telegram confirms delivery.
 
-服务默认每 10 秒轮询一次。首次成功连接时会保存当前最大 IMAP UID 作为基线，因此不会发送历史邮件。之后使用 `UIDVALIDITY + UID` 唯一标识邮件，并且仅在 Telegram 确认发送成功后记录为已处理。
+服务默认每 5 秒轮询一次。每次查询 UID 前先发送 IMAP `NOOP`，让 Gmail 长连接刷新已选择邮箱的状态。首次成功连接时会保存当前最大 IMAP UID 作为基线，因此不会发送历史邮件。之后使用 `UIDVALIDITY + UID` 唯一标识邮件，并且仅在 Telegram 确认发送成功后记录为已处理。
 
 ## Installation / 安装
 
@@ -44,7 +44,7 @@ OPENAI_BASE_URL=https://grsaiapi.com/v1
 OPENAI_MODEL=gpt-5.6-terra
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 TELEGRAM_CHAT_ID=your-telegram-chat-id
-POLL_INTERVAL=10
+POLL_INTERVAL=5
 ```
 
 ## Running manually / 手动运行
