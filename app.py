@@ -128,6 +128,7 @@ def _deliver_batch(
     state: StateStore,
     telegram: TelegramClient,
     display_timezone: ZoneInfo,
+    mailbox_key: str,
 ) -> None:
     """按 UID 顺序向 Telegram 投递已生成的摘要。"""
     for message in messages:
@@ -150,6 +151,7 @@ def _deliver_batch(
             telegram.send_message(notification)
             LOGGER.info("Telegram delivered email UID %s", message.uid)
             state.mark_processed(message.uid_key)
+            state.advance_completed_through(mailbox_key, message.uid)
             LOGGER.info("Persisted email UID %s as sent", message.uid)
         except TelegramError as exc:
             state.mark_delivery_failed(message.uid_key, type(exc).__name__)
@@ -203,6 +205,11 @@ def run() -> None:
 
                 if baseline is None:
                     raise StateError("Mailbox baseline was not initialized")
+                reconciled_uid = state.reconcile_mailbox(
+                    mailbox.key, mailbox.uid_validity
+                )
+                if reconciled_uid is not None:
+                    baseline = max(baseline, reconciled_uid)
                 sent_uids = state.load_processed_uids()
                 messages = mail.fetch_new_messages(baseline + 1, sent_uids)
                 if messages:
@@ -219,6 +226,7 @@ def run() -> None:
                         state,
                         telegram,
                         config.app_timezone,
+                        mailbox.key,
                     )
             except (MailClientError, StateError):
                 LOGGER.exception("Polling cycle failed; service will retry")

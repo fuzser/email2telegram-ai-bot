@@ -78,6 +78,9 @@ class StateStore:
                 uid_key TEXT PRIMARY KEY,
                 uid_validity TEXT NOT NULL,
                 uid INTEGER NOT NULL,
+                record_type TEXT NOT NULL DEFAULT 'email' CHECK (
+                    record_type IN ('email', 'reconciled_checkpoint')
+                ),
                 received_at TEXT,
                 status TEXT NOT NULL CHECK (
                     status IN ('pending', 'processing', 'summarized', 'sent')
@@ -92,9 +95,78 @@ class StateStore:
 
             CREATE INDEX IF NOT EXISTS idx_emails_status_uid
             ON emails(status, uid);
+
+            CREATE INDEX IF NOT EXISTS idx_emails_uid_validity_uid
+            ON emails(uid_validity, uid);
             """
         )
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(emails)")
+        }
+        if "record_type" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE emails ADD COLUMN record_type TEXT NOT NULL DEFAULT 'email'
+                CHECK (record_type IN ('email', 'reconciled_checkpoint'))
+                """
+            )
         connection.commit()
+
+    def reconcile_mailbox(self, mailbox_key: str, uid_validity: str) -> int | None:
+        """启动时以前进方式对账水位与最新 sent 记录。"""
+        connection = self._require_connection()
+        watermark_row = connection.execute(
+            "SELECT value FROM metadata WHERE key = ?",
+            (f"completed_through:{mailbox_key}",),
+        ).fetchone()
+        sent_row = connection.execute(
+            """
+            SELECT uid_key, uid FROM emails
+            WHERE uid_validity = ? AND status = 'sent'
+            ORDER BY uid DESC LIMIT 1
+            """,
+            (uid_validity,),
+        ).fetchone()
+        watermark = int(watermark_row["value"]) if watermark_row else None
+        latest_sent = int(sent_row["uid"]) if sent_row else None
+        values = [value for value in (watermark, latest_sent) if value is not None]
+        if not values:
+            return None
+        effective = max(values)
+        now = _utc_now()
+        with connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
+                (f"completed_through:{mailbox_key}", str(effective)),
+            )
+            if latest_sent != effective:
+                uid_key = f"{uid_validity}:{effective}"
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO emails(
+                        uid_key, uid_validity, uid, record_type, status,
+                        created_at, updated_at, sent_at
+                    ) VALUES (?, ?, ?, 'reconciled_checkpoint', 'sent', ?, ?, ?)
+                    """,
+                    (uid_key, uid_validity, effective, now, now, now),
+                )
+        return effective
+
+    def advance_completed_through(self, mailbox_key: str, uid: int) -> None:
+        """只允许向前推进已完成水位。"""
+        connection = self._require_connection()
+        key = f"completed_through:{mailbox_key}"
+        row = connection.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+        current = int(row["value"]) if row else None
+        if current is not None and uid <= current:
+            return
+        with connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
+                (key, str(uid)),
+            )
+        self._backup()
 
     def _migrate_legacy_state(self) -> None:
         """首次升级时导入旧 JSON，保留既有基线与去重记录。"""
