@@ -6,9 +6,9 @@ A small Python 3.12 service that polls Gmail over IMAP, summarizes new email wit
 
 ## How it works / 工作方式
 
-The service polls every 5 seconds by default. Before each UID query it sends IMAP `NOOP` so a long-lived Gmail connection refreshes its selected mailbox state. On its first successful connection it stores the current maximum IMAP UID as a baseline, so existing messages are not posted. Later messages are identified by `UIDVALIDITY + UID` and registered in SQLite before external API calls. Up to three LLM summaries run concurrently; Telegram delivery remains sequential in UID order. Summaries are cached for delivery retries, and a message is marked as sent only after Telegram confirms delivery.
+The service polls every 5 seconds by default. Before each UID query it sends IMAP `NOOP` so a long-lived Gmail connection refreshes its selected mailbox state. On its first successful connection it stores the current maximum IMAP UID as a baseline, so existing messages are not posted. After every later process restart, the bot posts `BOT 已重新上线` and recovers at most the newest 30 emails by default. Later messages are identified by `UIDVALIDITY + UID` and registered in SQLite before external API calls. Up to three LLM summaries run concurrently; Telegram delivery remains sequential in UID order. Summaries are cached for delivery retries, and a message is marked as sent only after Telegram confirms delivery.
 
-服务默认每 5 秒轮询一次。每次查询 UID 前先发送 IMAP `NOOP`，让 Gmail 长连接刷新已选择邮箱的状态。首次成功连接时会保存当前最大 IMAP UID 作为基线，因此不会发送历史邮件。之后使用 `UIDVALIDITY + UID` 唯一标识邮件，并在调用外部 API 前登记到 SQLite。最多三个 LLM 摘要任务并发执行，Telegram 仍按 UID 顺序逐条发送。摘要会缓存用于投递重试，并且仅在 Telegram 确认发送成功后标记为已发送。
+服务默认每 5 秒轮询一次。每次查询 UID 前先发送 IMAP `NOOP`，让 Gmail 长连接刷新已选择邮箱的状态。首次成功连接时会保存当前最大 IMAP UID 作为基线，因此不会发送历史邮件。之后每次进程重启，Bot 都会发送 `BOT 已重新上线`，并默认只从最新邮件开始向旧邮件回溯最多 30 封。之后使用 `UIDVALIDITY + UID` 唯一标识邮件，并在调用外部 API 前登记到 SQLite。最多三个 LLM 摘要任务并发执行，Telegram 仍按 UID 顺序逐条发送。摘要会缓存用于投递重试，并且仅在 Telegram 确认发送成功后标记为已发送。
 
 ## Installation / 安装
 
@@ -46,14 +46,15 @@ LLM_CONCURRENCY=3
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 TELEGRAM_CHAT_ID=your-telegram-chat-id
 POLL_INTERVAL=5
+RESTART_EMAIL_LOOKBACK_LIMIT=30
 STATE_DB_PATH=data/state.db
 LEGACY_STATE_PATH=data/state.json
 APP_TIMEZONE=Pacific/Auckland
 ```
 
-`LLM_CONCURRENCY=3` is the conservative default for burst processing. Notifications display `Received` and `Processed` in `Pacific/Auckland`. The systemd unit overrides the database path to `/var/lib/mail-agent/state.db`, creates that persistent directory with mode `0700`, and imports the old `/opt/mail-agent/data/state.json` through the configured relative legacy path.
+`LLM_CONCURRENCY=3` is the conservative default for burst processing. `RESTART_EMAIL_LOOKBACK_LIMIT=30` limits only the first mailbox recovery scan after each process start: it counts backward from the newest email, permanently skips older backlog beyond the limit, and accepts values from 1 to 10000. Normal polling after that scan is not capped. Notifications display `Received` and `Processed` in `Pacific/Auckland`. The systemd unit overrides the database path to `/var/lib/mail-agent/state.db`, creates that persistent directory with mode `0700`, and imports the old `/opt/mail-agent/data/state.json` through the configured relative legacy path.
 
-`LLM_CONCURRENCY=3` 是突发邮件处理的保守默认值。通知中的 `Received` 和 `Processed` 使用 `Pacific/Auckland`。systemd 服务会把数据库路径覆盖为 `/var/lib/mail-agent/state.db`，以 `0700` 权限自动创建持久目录，并通过配置的旧状态相对路径导入 `/opt/mail-agent/data/state.json`。
+`LLM_CONCURRENCY=3` 是突发邮件处理的保守默认值。`RESTART_EMAIL_LOOKBACK_LIMIT=30` 仅限制每次进程启动后的第一次邮箱恢复扫描：从最新邮件向旧邮件计数，超过上限的更早积压邮件会被永久跳过，可配置范围为 1 到 10000；之后的正常轮询不受此上限影响。通知中的 `Received` 和 `Processed` 使用 `Pacific/Auckland`。systemd 服务会把数据库路径覆盖为 `/var/lib/mail-agent/state.db`，以 `0700` 权限自动创建持久目录，并通过配置的旧状态相对路径导入 `/opt/mail-agent/data/state.json`。
 
 ## Running manually / 手动运行
 
@@ -100,9 +101,9 @@ systemctl is-active mail-agent
 journalctl -u mail-agent -b --no-pager
 ```
 
-Send a new test email only after the service has logged its initial baseline. Confirm that Telegram receives exactly one summary and that the reported latency is below 60 seconds under normal network conditions.
+Confirm that Telegram receives `BOT 已重新上线` after the service reconnects. Send a new test email only after the service has logged its initial baseline. Confirm that Telegram receives exactly one summary and that the reported latency is below 60 seconds under normal network conditions. To test recovery limiting, stop the service, deliver more messages than `RESTART_EMAIL_LOOKBACK_LIMIT`, and confirm that only the newest configured number are recovered after startup.
 
-请在日志显示首次 UID 基线已经建立后再发送测试邮件。确认 Telegram 只收到一条摘要，并且正常网络条件下显示的延迟低于 60 秒。
+确认服务重连后 Telegram 收到 `BOT 已重新上线`。请在日志显示首次 UID 基线已经建立后再发送测试邮件，确认 Telegram 只收到一条摘要，并且正常网络条件下显示的延迟低于 60 秒。如需验证恢复上限，可先停止服务，再投递超过 `RESTART_EMAIL_LOOKBACK_LIMIT` 数量的邮件，启动后应只恢复最新的配置数量。
 
 ## Five-line recovery runbook / 五行恢复手册
 

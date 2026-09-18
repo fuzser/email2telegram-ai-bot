@@ -18,6 +18,7 @@ STOP_EVENT = threading.Event()
 MAX_SENDER_CHARS = 320
 MAX_SUBJECT_CHARS = 500
 MAX_BULLET_CHARS = 800
+STARTUP_NOTIFICATION = "BOT 已重新上线"
 
 
 def _request_shutdown(signum: int, _frame: object) -> None:
@@ -187,6 +188,8 @@ def run() -> None:
 
     mailbox = None
     baseline = None
+    startup_notification_sent = False
+    restart_scan_pending = True
     try:
         while not STOP_EVENT.is_set():
             try:
@@ -204,6 +207,16 @@ def run() -> None:
                             baseline,
                         )
 
+                if not startup_notification_sent:
+                    try:
+                        telegram.send_message(STARTUP_NOTIFICATION)
+                        startup_notification_sent = True
+                        LOGGER.info("Telegram delivered the startup notification")
+                    except TelegramError:
+                        LOGGER.exception(
+                            "Could not deliver the startup notification; it will be retried"
+                        )
+
                 if baseline is None:
                     raise StateError("Mailbox baseline was not initialized")
                 reconciled_uid = state.reconcile_mailbox(
@@ -212,7 +225,27 @@ def run() -> None:
                 if reconciled_uid is not None:
                     baseline = max(baseline, reconciled_uid)
                 sent_uids = state.load_processed_uids()
-                messages = mail.fetch_new_messages(baseline + 1, sent_uids)
+                maximum_messages = (
+                    config.restart_email_lookback_limit
+                    if restart_scan_pending
+                    else None
+                )
+                fetch_result = mail.fetch_new_messages(
+                    baseline + 1,
+                    sent_uids,
+                    maximum_messages,
+                )
+                if fetch_result.skipped_through_uid is not None:
+                    baseline = max(baseline, fetch_result.skipped_through_uid)
+                    state.advance_completed_through(mailbox.key, baseline)
+                    LOGGER.warning(
+                        "Restart scan skipped older mail through UID %s; "
+                        "processing the latest %s email(s)",
+                        baseline,
+                        config.restart_email_lookback_limit,
+                    )
+                restart_scan_pending = False
+                messages = fetch_result.messages
                 if messages:
                     LOGGER.info("Found %s queued email(s)", len(messages))
                     summaries = _summarize_batch(

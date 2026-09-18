@@ -52,6 +52,14 @@ class EmailMessage:
         return f"{self.uid_validity}:{self.uid}"
 
 
+@dataclass(frozen=True, slots=True)
+class MailFetchResult:
+    """保存本次读取结果，以及因重启上限而跳过的最高 UID。"""
+
+    messages: list[EmailMessage]
+    skipped_through_uid: int | None
+
+
 class MailClient:
     """负责 IMAP 连接、自动重连、查询和邮件解析。"""
 
@@ -68,11 +76,16 @@ class MailClient:
         return self._with_reconnect(self._read_mailbox_status)
 
     def fetch_new_messages(
-        self, minimum_uid: int, processed_uids: set[str]
-    ) -> list[EmailMessage]:
-        """获取基线之后且尚未成功处理的邮件。"""
+        self,
+        minimum_uid: int,
+        processed_uids: set[str],
+        maximum_messages: int | None = None,
+    ) -> MailFetchResult:
+        """获取基线后的邮件，并可只保留最新的指定数量。"""
         return self._with_reconnect(
-            lambda: self._fetch_new_messages(minimum_uid, processed_uids)
+            lambda: self._fetch_new_messages(
+                minimum_uid, processed_uids, maximum_messages
+            )
         )
 
     def _connect(self) -> imaplib.IMAP4_SSL:
@@ -127,11 +140,18 @@ class MailClient:
         LOGGER.debug("Mailbox refreshed via IMAP NOOP")
 
     def _fetch_new_messages(
-        self, minimum_uid: int, processed_uids: set[str]
-    ) -> list[EmailMessage]:
+        self,
+        minimum_uid: int,
+        processed_uids: set[str],
+        maximum_messages: int | None,
+    ) -> MailFetchResult:
         connection = self._connect()
         uids = self._search_uids(connection)
         candidates = [uid for uid in uids if uid >= minimum_uid]
+        skipped_through_uid = None
+        if maximum_messages is not None and len(candidates) > maximum_messages:
+            skipped_through_uid = candidates[-maximum_messages - 1]
+            candidates = candidates[-maximum_messages:]
         messages: list[EmailMessage] = []
         for uid in candidates:
             uid_key = f"{self._uid_validity}:{uid}"
@@ -148,7 +168,7 @@ class MailClient:
             messages.append(
                 self._parse_message(uid, self._uid_validity, metadata, raw_message)
             )
-        return messages
+        return MailFetchResult(messages, skipped_through_uid)
 
     def _with_reconnect(self, operation: Callable[[], ResultType]) -> ResultType:
         """连接失效时清理并重试一次当前 IMAP 操作。"""

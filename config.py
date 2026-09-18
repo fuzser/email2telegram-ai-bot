@@ -27,6 +27,7 @@ class Config:
     telegram_chat_id: str
     poll_interval: int
     llm_concurrency: int
+    restart_email_lookback_limit: int
     state_db_path: Path
     legacy_state_path: Path
     app_timezone: ZoneInfo
@@ -78,6 +79,9 @@ def load_config() -> Config:
         telegram_chat_id=_required("TELEGRAM_CHAT_ID"),
         poll_interval=_positive_int("POLL_INTERVAL", "5", 300),
         llm_concurrency=_positive_int("LLM_CONCURRENCY", "3", 8),
+        restart_email_lookback_limit=_positive_int(
+            "RESTART_EMAIL_LOOKBACK_LIMIT", "30", 10000
+        ),
         state_db_path=Path(os.getenv("STATE_DB_PATH", "data/state.db").strip()),
         legacy_state_path=Path(
             os.getenv("LEGACY_STATE_PATH", "data/state.json").strip()
