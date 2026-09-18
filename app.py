@@ -18,7 +18,7 @@ STOP_EVENT = threading.Event()
 MAX_SENDER_CHARS = 320
 MAX_SUBJECT_CHARS = 500
 MAX_BULLET_CHARS = 800
-STARTUP_NOTIFICATION = "BOT 已重新上线"
+STARTUP_NOTIFICATION = "BOT reconnected"
 
 
 def _request_shutdown(signum: int, _frame: object) -> None:
