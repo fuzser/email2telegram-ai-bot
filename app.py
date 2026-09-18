@@ -197,6 +197,7 @@ def run() -> None:
                     if baseline is None:
                         baseline = mailbox.latest_uid
                         state.set_baseline(mailbox.key, baseline)
+                        state.advance_completed_through(mailbox.key, baseline)
                         LOGGER.info(
                             "Initialized mailbox baseline at UID %s; existing mail "
                             "is skipped",
